@@ -1,6 +1,6 @@
 # Ledgerly Finance Management UI
 
-A standalone, responsive React + TypeScript + Vite frontend for managing customers, loan accounts, cash flow, collections, and pending payments. It does not include or modify a backend and does not use seeded/demo records; displayed records come from the configured API.
+A standalone, responsive React + TypeScript + Vite frontend for managing customers, loan accounts, cash flow, collections, pending payments, and SQL backups. Create operations require confirmation, and imports replace existing application data. It does not include or modify a backend and does not use seeded/demo records; displayed records come from the configured API.
 
 ## Requirements and setup
 
@@ -33,6 +33,6 @@ npm run dev
 - `POST /api/cash-flow/transfers` with `fromAccount`, `amount`, and `date`
 - `POST /api/collections` with `loanId`, `collectionDate`, `amount`, and `transactionType` (`COLLECTED` or `PROFIT`)
 - `GET /api/payments/pending`
+- `GET /api/backup` and `POST /api/backup/import` for SQL backup export and restore
 
 All API calls are made with `fetch`. HTTP, network, and validation errors are surfaced in the UI. Optional table columns from the API are rendered defensively, but the app does not depend on unlisted response fields.
-

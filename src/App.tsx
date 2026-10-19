@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, CalendarDays, Check, ChevronRight, CircleAlert, CircleDollarSign, Download, FileText, HandCoins, Landmark, LayoutDashboard, LoaderCircle, Menu, Plus, Search, Users, Wallet, X } from 'lucide-react'
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, CalendarDays, Check, ChevronRight, CircleAlert, CircleDollarSign, Database, Download, FileText, HandCoins, Landmark, LayoutDashboard, LoaderCircle, Menu, Plus, Search, Upload, Users, Wallet, X } from 'lucide-react'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import './styles.css'
@@ -9,7 +9,7 @@ type Loan = { id: string | number; customerId?: string | number; loanType?: stri
 type CashFlow = { investmentAmount: number; financialBalance: number; profitAmount: number; collectionAmount: number }
 type Transfer = { id: number; source: Account; amount: number; date: string }
 type FinancialTransaction = { id: number; transactionType: string; amount: number; transactionDate: string; loanId: string | null; customerName: string | null }
-type Page = 'Overview' | 'Customers' | 'Cash Flow' | 'Loans' | 'Collections' | 'Pending Payments'
+type Page = 'Overview' | 'Customers' | 'Cash Flow' | 'Loans' | 'Collections' | 'Pending Payments' | 'Data Backup'
 type Account = 'INVESTMENT' | 'FINANCIAL_BALANCE' | 'PROFIT' | 'COLLECTION'
 type TxType = 'COLLECTED' | 'PROFIT'
 const API = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/$/, '')
@@ -17,6 +17,7 @@ const CURRENCY = import.meta.env.VITE_CURRENCY || 'USD'
 const pages: { name: Page; icon: typeof LayoutDashboard }[] = [
   { name: 'Overview', icon: LayoutDashboard }, { name: 'Customers', icon: Users }, { name: 'Cash Flow', icon: ArrowLeftRight },
   { name: 'Loans', icon: Banknote }, { name: 'Collections', icon: HandCoins }, { name: 'Pending Payments', icon: CalendarDays },
+  { name: 'Data Backup', icon: Database },
 ]
 const money = (value: unknown) => {
   const amount = Number(value)
@@ -34,7 +35,7 @@ const text = (value: unknown) => value === null || value === undefined || value 
 const today = () => { const date = new Date(); const month = String(date.getMonth() + 1).padStart(2, '0'); const day = String(date.getDate()).padStart(2, '0'); return date.getFullYear() + '-' + month + '-' + day }
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response
-  try { response = await fetch(`${API}${path}`, { ...options, headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } }) }
+  try { response = await fetch(`${API}${path}`, { ...options, headers: { Accept: 'application/json', ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...options.headers } }) }
   catch (e) { throw new Error(`Could not reach the API at ${API}. Check that the server is running and the URL is correct. ${e instanceof Error ? e.message : ''}`) }
   const raw = await response.text()
   let body: unknown
@@ -64,9 +65,11 @@ function App() {
   const [transfers, setTransfers] = useState<Transfer[]>([]), [transactions, setTransactions] = useState<FinancialTransaction[]>([])
   const [loading, setLoading] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [search, setSearch] = useState('')
   const [transferAccountFilter, setTransferAccountFilter] = useState(''), [pendingCustomerFilter, setPendingCustomerFilter] = useState(''), [pendingLoanFilter, setPendingLoanFilter] = useState(''), [pendingDueDateFilter, setPendingDueDateFilter] = useState('')
-  const [transactionCustomerFilter, setTransactionCustomerFilter] = useState(''), [transactionLoanFilter, setTransactionLoanFilter] = useState('')
+  const [transactionCustomerFilter, setTransactionCustomerFilter] = useState(''), [transactionLoanFilter, setTransactionLoanFilter] = useState(''), [transactionDateFilter, setTransactionDateFilter] = useState('')
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null), [selectedLoan, setSelectedLoan] = useState<Loan | null>(null)
+  const [confirmation, setConfirmation] = useState<{ title: string; message: string; confirmLabel: string; action: () => void } | null>(null)
   const [customerEditor, setCustomerEditor] = useState<Customer | null | false>(false)
+  const [backupFile, setBackupFile] = useState<File | null>(null), [backupBusy, setBackupBusy] = useState(false)
   const [customerForm, setCustomerForm] = useState({ name: '', mobileNumber: '', address: '', status: 'Active' })
   const [loanForm, setLoanForm] = useState({ customerId: '', loanType: 'INSTALLMENT_BASED', principalAmount: '', interestRate: '', repaymentFrequency: 'MONTHLY', weeklyDay: 'MONDAY', startDate: today(), installmentAmount: '' })
   const [transferForm, setTransferForm] = useState({ fromAccount: 'INVESTMENT' as Account, amount: '', date: today() })
@@ -79,10 +82,10 @@ function App() {
   const loadPending = useCallback(async () => setPending(asList<Record<string, unknown>>(await request<unknown>('/api/payments/pending'))), [])
   const loadTransfers = useCallback(async () => setTransfers(asList<Transfer>(await request<unknown>('/api/cash-flow/transfers'))), [])
   const loadTransactions = useCallback(async () => setTransactions(asList<FinancialTransaction>(await request<unknown>('/api/collections/history'))), [])
-  const refreshAll = useCallback(async () => {
+  const refreshAll = useCallback(async (): Promise<boolean> => {
     setLoading(true); setError('')
-    try { await Promise.all([loadCustomers(), loadLoans(), loadCash(), loadPending(), loadTransfers(), loadTransactions()]) }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not load dashboard data.') }
+    try { await Promise.all([loadCustomers(), loadLoans(), loadCash(), loadPending(), loadTransfers(), loadTransactions()]); return true }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not load dashboard data.'); return false }
     finally { setLoading(false) }
   }, [loadCash, loadCustomers, loadLoans, loadPending, loadTransfers, loadTransactions])
   useEffect(() => { void refreshAll() }, [refreshAll])
@@ -104,11 +107,29 @@ function App() {
   useEffect(() => { if (notice) { const timer = window.setTimeout(() => setNotice(''), 3500); return () => window.clearTimeout(timer) } }, [notice])
 
   const totalLoans = useMemo(() => loans.reduce((sum, loan) => sum + (Number(loan.principalAmount) || 0), 0), [loans])
+  const filteredTransactions = useMemo(() => transactions.filter((transaction) =>
+    (!transactionCustomerFilter || transaction.customerName === transactionCustomerFilter) &&
+    (!transactionLoanFilter || transaction.loanId?.toLowerCase().includes(transactionLoanFilter.toLowerCase())) &&
+    (!transactionDateFilter || String(transaction.transactionDate).slice(0, 10) === transactionDateFilter)
+  ), [transactions, transactionCustomerFilter, transactionLoanFilter, transactionDateFilter])
+  const filteredPending = useMemo(() => pending.filter((row) => {
+    const customerMatches = !pendingCustomerFilter || String(row.customerId) === pendingCustomerFilter
+    const loanId = String(row.loanId ?? row.id ?? '')
+    const loanMatches = !pendingLoanFilter || loanId.toLowerCase().includes(pendingLoanFilter.toLowerCase())
+    const dueDate = findKey(row, ['nextInstallmentDate', 'dueDate', 'paymentDate', 'date'])
+    const dateMatches = !pendingDueDateFilter || (dueDate !== undefined && String(row[dueDate]).slice(0, 10) === pendingDueDateFilter)
+    return customerMatches && loanMatches && dateMatches
+  }), [pending, pendingCustomerFilter, pendingLoanFilter, pendingDueDateFilter])
+  const transactionTotal = filteredTransactions.reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0)
+  const pendingTotal = filteredPending.reduce((sum, row) => sum + (Number(row.amount ?? row.installmentAmount) || 0), 0)
   const go = (next: Page) => { setPage(next); setMobileNav(false); setError(''); setSelectedCustomer(null); setSelectedLoan(null) }
   const mutate = async (action: () => Promise<unknown>, success: string, reload: () => Promise<unknown>): Promise<boolean> => {
     setError(''); setNotice('')
     try { await action(); await reload(); setNotice(success); return true }
     catch (e) { setError(e instanceof Error ? e.message : 'The request could not be completed.'); return false }
+  }
+  const confirmAction = (title: string, message: string, confirmLabel: string, action: () => void) => {
+    setConfirmation({ title, message, confirmLabel, action })
   }
   const openCustomer = async (customer: Customer) => {
     setSelectedCustomer(customer); setError('')
@@ -127,28 +148,41 @@ function App() {
     event.preventDefault()
     if (!customerForm.name.trim()) { setError('Name is required.'); return }
     const editing = customerEditor || null
-    void mutate(() => request(editing ? `/api/customers/${encodeURIComponent(editing.id)}` : '/api/customers', { method: editing ? 'PUT' : 'POST', body: JSON.stringify({ name: customerForm.name.trim(), mobileNumber: customerForm.mobileNumber.trim() || '', address: customerForm.address.trim() || '', status: customerForm.status }) }), editing ? 'Customer updated.' : 'Customer added.', () => loadCustomers(search)).then((saved) => { if (saved) setCustomerEditor(false) })
+    const action = () => { void mutate(() => request(editing ? `/api/customers/${encodeURIComponent(editing.id)}` : '/api/customers', { method: editing ? 'PUT' : 'POST', body: JSON.stringify({ name: customerForm.name.trim(), mobileNumber: customerForm.mobileNumber.trim() || '', address: customerForm.address.trim() || '', status: customerForm.status }) }), editing ? 'Customer updated.' : 'Customer added.', () => loadCustomers(search)).then((saved) => { if (saved) setCustomerEditor(false) }) }
+    if (editing) action()
+    else confirmAction('Confirm customer creation', 'Once confirmed, this customer record cannot be automatically reverted.', 'Create customer', action)
   }
   const saveLoan = (event: FormEvent) => {
     event.preventDefault()
-    const principalAmount = Number(loanForm.principalAmount), installmentAmount = Number(loanForm.installmentAmount), interestRate = Number(loanForm.interestRate || 0)
-    if (!loanForm.customerId || !loanForm.startDate || principalAmount <= 0 || installmentAmount <= 0 || interestRate < 0 || !Number.isFinite(principalAmount + installmentAmount + interestRate)) { setError('Choose a customer and enter a valid start date, principal, installment, and non-negative interest rate.'); return }
+    const principalAmount = Number(loanForm.principalAmount), interestRate = Number(loanForm.interestRate || 0)
+    const installmentAmount = loanForm.loanType === 'MONTHLY_INTEREST'
+      ? Number((principalAmount * interestRate / 100).toFixed(2))
+      : Number(loanForm.installmentAmount)
+    if (!loanForm.customerId || !loanForm.startDate || principalAmount <= 0 || installmentAmount <= 0 || interestRate < 0 || (loanForm.loanType === 'MONTHLY_INTEREST' && interestRate <= 0) || !Number.isFinite(principalAmount + installmentAmount + interestRate)) { setError('Choose a customer and enter a valid start date, principal, installment, and positive monthly interest rate.'); return }
     const repaymentFrequency = loanForm.loanType === 'MONTHLY_INTEREST' ? 'MONTHLY' : loanForm.repaymentFrequency
     const payload = { customerId: loanForm.customerId, loanType: loanForm.loanType, principalAmount, interestRate, repaymentFrequency, ...(repaymentFrequency === 'WEEKLY' ? { weeklyDay: loanForm.weeklyDay } : {}), startDate: loanForm.startDate, installmentAmount }
-    void mutate(() => request('/api/loans', { method: 'POST', body: JSON.stringify(payload) }), 'Loan created.', async () => { await Promise.all([loadLoans(), loadCustomers(), loadCash(), loadPending(), loadTransactions()]) })
-    setLoanForm((form) => ({ ...form, principalAmount: '', interestRate: '', installmentAmount: '' }))
+    confirmAction('Confirm loan creation', 'Once confirmed, this loan and its financial transactions cannot be automatically reverted.', 'Create loan', () => {
+      void mutate(() => request('/api/loans', { method: 'POST', body: JSON.stringify(payload) }), 'Loan created.', async () => { await Promise.all([loadLoans(), loadCustomers(), loadCash(), loadPending(), loadTransactions()]) })
+        .then((saved) => { if (saved) setLoanForm((form) => ({ ...form, principalAmount: '', interestRate: '', installmentAmount: '' })) })
+    })
   }
   const saveTransfer = (event: FormEvent) => {
     event.preventDefault(); const amount = Number(transferForm.amount)
     if (!Number.isFinite(amount) || amount <= 0 || !transferForm.date) { setError('Enter a valid transfer amount greater than zero and a date.'); return }
-    void mutate(() => request('/api/cash-flow/transfers', { method: 'POST', body: JSON.stringify({ ...transferForm, amount }) }), 'Transfer recorded.', async () => { await Promise.all([loadCash(), loadPending(), loadTransfers()]) })
-    setTransferForm((form) => ({ ...form, amount: '' }))
+    const payload = { ...transferForm, amount }
+    confirmAction('Confirm cash flow transfer', 'Once confirmed, this transfer and the associated balance changes cannot be automatically reverted.', 'Record transfer', () => {
+      void mutate(() => request('/api/cash-flow/transfers', { method: 'POST', body: JSON.stringify(payload) }), 'Transfer recorded.', async () => { await Promise.all([loadCash(), loadPending(), loadTransfers()]) })
+        .then((saved) => { if (saved) setTransferForm((form) => ({ ...form, amount: '' })) })
+    })
   }
   const saveCollection = (event: FormEvent) => {
     event.preventDefault(); const amount = Number(collectionForm.amount)
     if (!collectionForm.customerId || !collectionForm.loanId || !collectionForm.transactionType || !collectionForm.collectionDate || !Number.isFinite(amount) || amount <= 0) { setError('Select a customer and loan, then enter a valid date and amount greater than zero.'); return }
-    void mutate(() => request('/api/collections', { method: 'POST', body: JSON.stringify({ loanId: collectionForm.loanId, collectionDate: collectionForm.collectionDate, amount, transactionType: collectionForm.transactionType }) }), 'Collection recorded.', async () => { await Promise.all([loadCash(), loadPending(), loadTransactions()]) })
-    setCollectionForm((form) => ({ ...form, amount: '' }))
+    const payload = { loanId: collectionForm.loanId, collectionDate: collectionForm.collectionDate, amount, transactionType: collectionForm.transactionType }
+    confirmAction('Confirm collection', 'Once confirmed, this collection and its balance or payment schedule changes cannot be automatically reverted.', 'Record collection', () => {
+      void mutate(() => request('/api/collections', { method: 'POST', body: JSON.stringify(payload) }), 'Collection recorded.', async () => { await Promise.all([loadCash(), loadPending(), loadTransactions()]) })
+        .then((saved) => { if (saved) setCollectionForm((form) => ({ ...form, amount: '' })) })
+    })
   }
   const transferSourceBalance = cash ? ({ INVESTMENT: cash.investmentAmount, FINANCIAL_BALANCE: cash.financialBalance, PROFIT: cash.profitAmount, COLLECTION: cash.collectionAmount })[transferForm.fromAccount] : null
   const collectionLoan = customerLoans.find((loan) => String(loan.id) === collectionForm.loanId)
@@ -157,6 +191,40 @@ function App() {
   const downloadLoans = () => exportPdf('Loans', ['ID', 'Customer', 'Type', 'Principal', 'Rate', 'Frequency', 'Installment'], loans.map((l) => [l.id, nameFor(customers, l.customerId), text(l.loanType), money(l.principalAmount), text(l.interestRate), text(l.repaymentFrequency), money(l.installmentAmount)]))
   const downloadPending = () => { const keys = [...new Set(pending.flatMap((row) => Object.keys(row)))].filter((key) => !key.startsWith('_')); exportPdf('Pending Payments', keys, pending.map((row) => keys.map((key) => text(row[key])))) }
   const downloadCash = () => exportPdf('Cash Flow', ['Account', 'Balance'], cash ? [['Investment', money(cash.investmentAmount)], ['Financial balance', money(cash.financialBalance)], ['Profit', money(cash.profitAmount)], ['Collections', money(cash.collectionAmount)]] : [])
+  const downloadDatabaseBackup = async () => {
+    setBackupBusy(true); setError('')
+    try {
+      const response = await fetch(`${API}/api/backup`, { headers: { Accept: 'application/sql' } })
+      if (!response.ok) throw new Error(`Backup download failed (${response.status} ${response.statusText}).`)
+      const blob = await response.blob()
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1] || 'finance-backup.sql'
+      link.click()
+      URL.revokeObjectURL(link.href)
+      setNotice('Database backup downloaded.')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not download database backup.') }
+    finally { setBackupBusy(false) }
+  }
+  const importDatabaseBackup = () => {
+    if (!backupFile) { setError('Choose a SQL backup file first.'); return }
+    const file = backupFile
+    confirmAction('Replace database from backup?', 'This replaces all current customers, loans, cash balances, and transaction history with the selected backup. This cannot be undone. Create a backup of the current data first if you may need it.', 'Replace all data', () => {
+      void (async () => {
+        setBackupBusy(true); setError(''); setNotice('')
+        try {
+          const form = new FormData()
+          form.append('file', file)
+          await request('/api/backup/import', { method: 'POST', body: form })
+          const refreshed = await refreshAll()
+          setBackupFile(null)
+          if (refreshed) setNotice('Database restored from backup. ID sequences are ready for new records.')
+          else setError('Backup restored, but some data could not be refreshed in the screen. Reload the application.')
+        } catch (e) { setError(e instanceof Error ? e.message : 'Could not import database backup.') }
+        finally { setBackupBusy(false) }
+      })()
+    })
+  }
   const metric = (label: string, amount: unknown, icon: ReactNode, tone: string, caption: string) => <article className="metric-card" key={label}><div className={`metric-icon ${tone}`}>{icon}</div><span className="metric-label">{label}</span><strong>{money(amount)}</strong><span className="metric-caption">{caption}</span></article>
   const renderDetails = (record: Record<string, unknown>, omit: string[]) => <dl className="detail-grid">{Object.entries(record).filter(([key]) => !omit.includes(key)).map(([key, value]) => <div key={key}><dt>{key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}</dt><dd>{text(value)}</dd></div>)}</dl>
 
@@ -205,7 +273,7 @@ function App() {
       <Field label="Repayment frequency" required><select value={loanForm.repaymentFrequency} onChange={(e) => setLoanForm({ ...loanForm, repaymentFrequency: e.target.value })} disabled={loanForm.loanType === 'MONTHLY_INTEREST'}>{loanForm.loanType === 'MONTHLY_INTEREST' ? <option value="MONTHLY">Monthly</option> : <><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></>}</select></Field>
       {loanForm.repaymentFrequency === 'WEEKLY' && <Field label="Repayment weekday" required><select value={loanForm.weeklyDay} onChange={(e) => setLoanForm({ ...loanForm, weeklyDay: e.target.value })}>{['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'].map((day) => <option key={day} value={day}>{day.charAt(0) + day.slice(1).toLowerCase()}</option>)}</select></Field>}
       <Field label="Start date" required><input type="date" value={loanForm.startDate} onChange={(e) => setLoanForm({ ...loanForm, startDate: e.target.value })} required /></Field>
-      <Field label={loanForm.loanType === 'MONTHLY_INTEREST' ? 'Monthly installment / payment' : 'Installment amount'} required><input type="number" min="0.01" step="0.01" value={loanForm.installmentAmount} onChange={(e) => setLoanForm({ ...loanForm, installmentAmount: e.target.value })} placeholder="0.00" required /></Field>
+      <Field label={loanForm.loanType === 'MONTHLY_INTEREST' ? 'Monthly interest amount' : 'Installment amount'} required><input type="number" min="0.01" step="0.01" value={loanForm.loanType === 'MONTHLY_INTEREST' ? (Number(loanForm.principalAmount) > 0 && Number(loanForm.interestRate) > 0 ? (Number(loanForm.principalAmount) * Number(loanForm.interestRate) / 100).toFixed(2) : '') : loanForm.installmentAmount} onChange={(e) => setLoanForm({ ...loanForm, installmentAmount: e.target.value })} placeholder="0.00" readOnly={loanForm.loanType === 'MONTHLY_INTEREST'} required /><small>{loanForm.loanType === 'MONTHLY_INTEREST' ? 'Calculated as principal × interest rate ÷ 100.' : ''}</small></Field>
       {tenure !== null && loanForm.loanType === 'INSTALLMENT_BASED' && <div className="tenure-note"><CalendarDays size={17} /><span>Estimated tenure <b>{tenure} installment{tenure === 1 ? '' : 's'}</b> (principal - installment, rounded up)</span></div>}
       <div className="form-actions"><button className="button button-primary" type="submit"><Plus size={16} />Create loan</button></div>
     </form></section>
@@ -214,36 +282,42 @@ function App() {
   else if (page === 'Collections') content = <>
     <Header title="Collections" subtitle="Record loan repayments and profit transactions." />
     <section className="panel form-panel"><div className="panel-heading"><div><h2>Record a collection</h2><p>Select a customer to see their loans.</p></div><span className="section-icon"><HandCoins size={19} /></span></div><form className="form-grid" onSubmit={saveCollection}>
-      <Field label="Customer" required><select value={collectionForm.customerId} onChange={(e) => setCollectionForm({ ...collectionForm, customerId: e.target.value, loanId: '', transactionType: '' })} required><option value="">Select a customer</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name} - {c.mobileNumber}</option>)}</select></Field>
-      <Field label="Loan" required><select value={collectionForm.loanId} onChange={(e) => { const loan = customerLoans.find((item) => String(item.id) === e.target.value); setCollectionForm({ ...collectionForm, loanId: e.target.value, transactionType: loan?.loanType === 'MONTHLY_INTEREST' ? 'PROFIT' : loan ? 'COLLECTED' : '' }) }} required disabled={!collectionForm.customerId || loansLoading}><option value="">{loansLoading ? 'Loading loans...' : collectionForm.customerId ? 'Select a loan' : 'Choose a customer first'}</option>{customerLoans.map((l) => <option key={l.id} value={l.id}>#{l.id} - {money(l.principalAmount)} - {text(l.loanType)}</option>)}</select></Field>
+      <Field label="Customer" required><select value={collectionForm.customerId} onChange={(e) => setCollectionForm({ ...collectionForm, customerId: e.target.value, loanId: '', transactionType: '', amount: '' })} required><option value="">Select a customer</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name} - {c.mobileNumber}</option>)}</select></Field>
+      <Field label="Loan" required><select value={collectionForm.loanId} onChange={(e) => { const loan = customerLoans.find((item) => String(item.id) === e.target.value); const transactionType = loan?.loanType === 'MONTHLY_INTEREST' ? 'PROFIT' : loan ? 'COLLECTED' : ''; setCollectionForm({ ...collectionForm, loanId: e.target.value, transactionType, amount: loan ? String(loan.installmentAmount ?? '') : '' }) }} required disabled={!collectionForm.customerId || loansLoading}><option value="">{loansLoading ? 'Loading loans...' : collectionForm.customerId ? 'Select a loan' : 'Choose a customer first'}</option>{customerLoans.map((l) => <option key={l.id} value={l.id}>#{l.id} - {money(l.principalAmount)} - {text(l.loanType)}</option>)}</select></Field>
+      <Field label="Transaction type" required><select value={collectionForm.transactionType} onChange={(e) => setCollectionForm({ ...collectionForm, transactionType: e.target.value as TxType | '', amount: e.target.value === 'PROFIT' || collectionLoan?.loanType === 'INSTALLMENT_BASED' ? String(collectionLoan?.installmentAmount ?? '') : '' })} required disabled={!collectionLoan}><option value="">{collectionLoan ? 'Select transaction type' : 'Select a loan first'}</option>{collectionLoan?.loanType === 'MONTHLY_INTEREST' ? <><option value="COLLECTED">Collected</option><option value="PROFIT">Profit</option></> : collectionLoan ? <option value="COLLECTED">Collected</option> : null}</select></Field>
       <Field label="Collection date" required><input type="date" value={collectionForm.collectionDate} onChange={(e) => setCollectionForm({ ...collectionForm, collectionDate: e.target.value })} required /></Field>
       <Field label="Amount" required><input type="number" min="0.01" step="0.01" value={collectionForm.amount} onChange={(e) => setCollectionForm({ ...collectionForm, amount: e.target.value })} placeholder="0.00" required /></Field>
-      <Field label="Transaction type" required><select value={collectionForm.transactionType} onChange={(e) => setCollectionForm({ ...collectionForm, transactionType: e.target.value as TxType | '' })} required disabled={!collectionLoan}><option value="">{collectionLoan ? 'Select transaction type' : 'Select a loan first'}</option>{collectionLoan?.loanType === 'MONTHLY_INTEREST' ? <option value="PROFIT">Profit</option> : collectionLoan ? <option value="COLLECTED">Collected</option> : null}</select></Field>
       <div className="form-actions"><button className="button button-primary" type="submit"><Check size={16} />Record collection</button></div>
     </form></section>
     <section className="panel"><div className="panel-heading"><div><h2>Financial transaction history</h2><p>{transactions.length} transaction{transactions.length === 1 ? '' : 's'}</p></div></div>
       <div className="table-toolbar">
         <Field label="Filter by customer"><select value={transactionCustomerFilter} onChange={(e) => setTransactionCustomerFilter(e.target.value)}><option value="">All customers</option>{customers.map((customer) => <option key={customer.id} value={customer.name}>{customer.name}</option>)}</select></Field>
         <Field label="Filter by loan name"><input type="search" value={transactionLoanFilter} onChange={(e) => setTransactionLoanFilter(e.target.value)} placeholder="Search loan ID" /></Field>
+        <Field label="Filter by date"><input type="date" value={transactionDateFilter} onChange={(e) => setTransactionDateFilter(e.target.value)} /></Field>
       </div>
-      <div className="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Loan name</th><th>Transaction type</th><th>Amount</th></tr></thead><tbody>{transactions.filter((transaction) => (!transactionCustomerFilter || transaction.customerName === transactionCustomerFilter) && (!transactionLoanFilter || transaction.loanId?.toLowerCase().includes(transactionLoanFilter.toLowerCase()))).map((transaction) => <tr key={transaction.id}><td>{dateLabel(transaction.transactionDate)}</td><td>{text(transaction.customerName)}</td><td>{text(transaction.loanId)}</td><td>{text(transaction.transactionType)}</td><td>{money(transaction.amount)}</td></tr>)}</tbody></table></div>
-      {transactions.filter((transaction) => (!transactionCustomerFilter || transaction.customerName === transactionCustomerFilter) && (!transactionLoanFilter || transaction.loanId?.toLowerCase().includes(transactionLoanFilter.toLowerCase()))).length === 0 && <p className="empty-state">No transactions match these filters.</p>}
+      <div className="summary-card"><div><span>Filtered amount total</span><small>{filteredTransactions.length} matching transaction{filteredTransactions.length === 1 ? '' : 's'}</small></div><strong>{money(transactionTotal)}</strong></div>
+      <div className="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Loan name</th><th>Transaction type</th><th>Amount</th></tr></thead><tbody>{filteredTransactions.map((transaction) => <tr key={transaction.id}><td>{dateLabel(transaction.transactionDate)}</td><td>{text(transaction.customerName)}</td><td>{text(transaction.loanId)}</td><td>{text(transaction.transactionType)}</td><td>{money(transaction.amount)}</td></tr>)}</tbody></table></div>
+      {filteredTransactions.length === 0 && <p className="empty-state">No transactions match these filters.</p>}
     </section>
   </>
-  else content = <>
+  else if (page === 'Pending Payments') content = <>
     <Header title="Pending payments" subtitle="Due dates and upcoming payment obligations." action={<PdfButton onClick={downloadPending} />} />
     <section className="panel"><div className="table-toolbar">
       <Field label="Filter by customer"><select value={pendingCustomerFilter} onChange={(e) => setPendingCustomerFilter(e.target.value)}><option value="">All customers</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></Field>
       <Field label="Filter by loan name"><input type="search" value={pendingLoanFilter} onChange={(e) => setPendingLoanFilter(e.target.value)} placeholder="Search loan ID" /></Field>
       <Field label="Filter by due date"><input type="date" value={pendingDueDateFilter} onChange={(e) => setPendingDueDateFilter(e.target.value)} /></Field>
-    </div><DataState loading={loading} error={error} empty={!pending.length} emptyText="There are no pending payments returned by the API."><PendingTable data={pending.filter((row) => {
-      const customerMatches = !pendingCustomerFilter || String(row.customerId) === pendingCustomerFilter
-      const loanId = String(row.loanId ?? row.id ?? '')
-      const loanMatches = !pendingLoanFilter || loanId.toLowerCase().includes(pendingLoanFilter.toLowerCase())
-      const dueDate = findKey(row, ['nextInstallmentDate', 'dueDate', 'paymentDate', 'date'])
-      const dateMatches = !pendingDueDateFilter || (dueDate !== undefined && String(row[dueDate]).slice(0, 10) === pendingDueDateFilter)
-      return customerMatches && loanMatches && dateMatches
-    })} customers={customers} onExport={downloadPending} /></DataState></section>
+    </div><div className="summary-card"><div><span>Filtered pending amount</span><small>{filteredPending.length} matching payment{filteredPending.length === 1 ? '' : 's'}</small></div><strong>{money(pendingTotal)}</strong></div><DataState loading={loading} error={error} empty={!pending.length} emptyText="There are no pending payments returned by the API."><PendingTable data={filteredPending} customers={customers} onExport={downloadPending} /></DataState></section>
+  </>
+  else content = <>
+    <Header title="Data backup" subtitle="Download an SQL backup or restore this application from a previous backup." />
+    <section className="panel form-panel">
+      <div className="panel-heading"><div><h2>Export database backup</h2><p>Download all application records in a dated SQL file.</p></div><span className="section-icon"><Database size={19} /></span></div>
+      <div className="backup-panel-body"><p>Backup files include customers, loans, account balances, collections, and transfers. The file name uses the current date, for example 19Oct2026.sql.</p><button className="button button-primary" type="button" onClick={() => void downloadDatabaseBackup()} disabled={backupBusy}><Download size={16} />{backupBusy ? 'Working…' : 'Download SQL backup'}</button></div>
+    </section>
+    <section className="panel form-panel">
+      <div className="panel-heading"><div><h2>Import database backup</h2><p>Restore a backup created by this application.</p></div><span className="section-icon"><Upload size={19} /></span></div>
+      <div className="backup-panel-body"><div className="alert alert-error"><CircleAlert size={18} /><span>Import replaces all current application data with the selected backup. This cannot be undone. Export a backup first if you may need the current data. Only SQL backup files created by this application can be restored here.</span></div><Field label="SQL backup file" required><input key={backupFile?.name || 'no-file'} type="file" accept=".sql,text/plain" onChange={(event) => setBackupFile(event.target.files?.[0] || null)} /></Field><p className="record-count">{backupFile?.name || 'Select a backup file to continue.'}</p><button className="button button-primary" type="button" onClick={importDatabaseBackup} disabled={!backupFile || backupBusy}><Upload size={16} />Restore backup</button></div>
+    </section>
   </>
 
   return <div className="app-shell">
@@ -253,6 +327,7 @@ function App() {
       <div className="page-content">{error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}{notice && <div className="alert alert-success" role="status"><Check size={18} /><span>{notice}</span><button aria-label="Dismiss message" onClick={() => setNotice('')}><X size={16} /></button></div>}{content}</div>
     </main>
     {customerEditor !== false && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setCustomerEditor(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="customer-form-title"><div className="modal-heading"><div><h2 id="customer-form-title">{customerEditor ? 'Edit customer' : 'Add customer'}</h2><p>Keep customer records accurate and up to date.</p></div><button className="icon-button" aria-label="Close" onClick={() => setCustomerEditor(false)}><X size={19} /></button></div><form className="stack-form" onSubmit={saveCustomer}>{error && <div className="alert alert-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}<Field label="Full name" required><input value={customerForm.name} onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })} autoFocus required placeholder="Full name" /></Field><Field label="Mobile number"><input type="tel" value={customerForm.mobileNumber} onChange={(e) => setCustomerForm({ ...customerForm, mobileNumber: e.target.value })} placeholder="Enter phone number (optional)" /></Field><Field label="Address"><textarea rows={3} value={customerForm.address} onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })} placeholder="Street, city, postal code (optional)" /></Field>{customerEditor && <Field label="Status" required><select value={customerForm.status} onChange={(e) => setCustomerForm({ ...customerForm, status: e.target.value })}><option value="Active">Active</option><option value="Inactive">Inactive</option></select></Field>}<div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setCustomerEditor(false)}>Cancel</button><button className="button button-primary" type="submit">{customerEditor ? 'Save changes' : 'Add customer'}</button></div></form></section></div>}
+    {confirmation && <div className="modal-backdrop" role="presentation"><section className="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message"><div className="modal-heading"><div><h2 id="confirmation-title">{confirmation.title}</h2><p id="confirmation-message">{confirmation.message}</p></div><button className="icon-button" aria-label="Cancel" onClick={() => setConfirmation(null)}><X size={19} /></button></div><div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setConfirmation(null)}>Cancel</button><button className="button button-primary" type="button" disabled={backupBusy} onClick={() => { const action = confirmation.action; setConfirmation(null); action() }}>{confirmation.confirmLabel}</button></div></section></div>}
   </div>
 }
 
@@ -272,10 +347,4 @@ function PendingTable({ data, customers, onExport }: { data: Record<string, unkn
   return <><div className="table-toolbar inner-toolbar"><span className="record-count">{data.length} pending payment{data.length === 1 ? '' : 's'}</span><button className="button button-outline" onClick={onExport} type="button"><Download size={16} />Export PDF</button></div><div className="table-wrap"><table><thead><tr><th>Customer</th><th>Loan</th><th>Due date</th><th>Next payment</th><th>Amount</th><th>Status</th>{extras.map((key) => <th key={key}>{key.replace(/([A-Z])/g, ' $1')}</th>)}</tr></thead><tbody>{data.map((row, i) => { const customerId = row.customerId; const due = findKey(row, ['nextInstallmentDate', 'dueDate', 'paymentDate', 'date']); const next = findKey(row, ['nextPaymentDate', 'nextDueDate']); const amount = findKey(row, ['amount', 'installmentAmount']); return <tr key={String(row.id ?? `${row.loanId ?? 'payment'}-${i}`)}><td>{text(row.customerName ?? (customerId !== undefined ? nameFor(customers, customerId) : '-'))}</td><td>{text(row.loanId ?? row.id ?? '—')}</td><td>{due ? dateLabel(row[due]) : '-'}</td><td>{next ? dateLabel(row[next]) : '-'}</td><td>{amount ? money(row[amount]) : '-'}</td><td>{row.status !== undefined ? <span className="status-pill">{text(row.status)}</span> : '-'}</td>{extras.map((key) => <td key={key}>{text(row[key])}</td>)}</tr> })}</tbody></table></div></>
 }
 export default App
-
-
-
-
-
-
 
